@@ -1,0 +1,14 @@
+{
+  "name": "Nasal Hum Tuner",
+  "short_name": "Hum Tuner",
+  "description": "Live pitch reader for nasal humming practice, tuned to 130 Hz.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0E1224",
+  "theme_color": "#0E1224",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

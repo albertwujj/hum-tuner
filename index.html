@@ -1,0 +1,1413 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nasal Hum Tuner</title>
+<meta name="description" content="Live pitch reader for nasal humming practice, tuned to 130 Hz.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ECEFF5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1224" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Hum Tuner">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: an instrument stage (resonance orb, Hz gauge, controls) beside a practice log; stacks to one column on phones.
+   Color: cool slate means far from the target; amber, then gold, means close. */
+:root {
+  --bg: #ECEFF5;
+  --surface: #F8F9FC;
+  --ink: #161B2E;
+  --muted: #586079;
+  --line: #CDD3E0;
+  --cool: #8391B8;
+  --warm: #E2861F;
+  --hot: #F2AE1C;
+  --warm-ink: #8F5200;
+  --on-hot: #231705;
+  --alert: #B3261E;
+  --chip-max: 0.55;
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0E1224;
+    --surface: #161B33;
+    --ink: #E8EAF4;
+    --muted: #959CBA;
+    --line: #2B3254;
+    --cool: #7383BC;
+    --warm: #F0962E;
+    --hot: #FFD166;
+    --warm-ink: #FFC069;
+    --on-hot: #231705;
+    --alert: #FF8F80;
+    --chip-max: 0.92;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 15px/1.5 var(--font-display);
+  font-variation-settings: "opsz" 14;
+  padding-block: calc(env(safe-area-inset-top, 0px) + 14px) calc(env(safe-area-inset-bottom, 0px) + 32px);
+  padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
+  -webkit-tap-highlight-color: transparent;
+}
+button { font: inherit; color: inherit; touch-action: manipulation; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+:focus-visible { outline: 2px solid var(--warm); outline-offset: 3px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.app { max-width: 1100px; margin: 0 auto; display: grid; gap: 18px; }
+
+/* Header */
+.top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
+h1 {
+  margin: 0;
+  font: 650 clamp(21px, 1.6vw + 15px, 30px)/1.1 var(--font-display);
+  font-variation-settings: "opsz" 60;
+  letter-spacing: -0.015em;
+}
+.today { margin: 3px 0 0; color: var(--muted); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.target {
+  display: flex; align-items: center; gap: 4px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 4px;
+}
+.target button {
+  width: 38px; height: 38px; border: 0; border-radius: 50%; background: transparent; cursor: pointer;
+  font: 500 20px/1 var(--font-data);
+}
+.target button:hover { background: var(--bg); }
+.target button:active { transform: scale(0.94); }
+.tval { min-width: 7.5em; text-align: center; font: 500 16px/1 var(--font-data); font-variant-numeric: tabular-nums; }
+.tval .lbl { display: block; margin-bottom: 4px; font: 600 10px/1 var(--font-display); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+
+.banner {
+  margin: 0; padding: 12px 14px; border: 1px solid var(--alert); border-radius: 12px;
+  background: var(--surface); color: var(--alert); font-size: 14px;
+}
+
+/* Main grid */
+.grid { display: grid; gap: 22px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 880px) {
+  .grid { grid-template-columns: minmax(0, 430px) minmax(0, 1fr); align-items: start; gap: 32px; }
+  .stage { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 14px); }
+}
+
+/* Stage */
+.stage { display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 10px; min-width: 0; }
+.orb-wrap {
+  position: relative;
+  width: clamp(230px, 46vh, 400px);
+  width: clamp(230px, 46svh, 400px);
+  max-width: 100%;
+  aspect-ratio: 1;
+  container-type: inline-size;
+}
+.orb-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.readout {
+  position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
+  pointer-events: none; color: var(--ink); transition: color 0.25s ease;
+}
+.readout.lit { color: var(--on-hot); }
+.hz {
+  font: 500 clamp(32px, 9.5vw, 52px)/1 var(--font-data); font-size: 14.5cqi;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.04em; white-space: nowrap;
+  transition: opacity 0.3s ease;
+}
+.hz .unit { font-size: 0.34em; letter-spacing: 0; margin-left: 0.3em; opacity: 0.7; }
+.sub { margin-top: 0.5em; font: 500 13px/1.2 var(--font-data); font-size: max(12px, 4cqi); opacity: 0.78; white-space: nowrap; }
+.readout.idle .hz { opacity: 0.38; }
+.tag {
+  position: absolute; top: 4px; left: 0;
+  padding: 4px 9px; border-radius: 999px; border: 1px dashed var(--muted);
+  font: 600 10.5px/1 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+  background: var(--bg);
+}
+.status {
+  margin: 0; min-height: 1.35em; max-width: 26ch; text-align: center; text-wrap: balance;
+  font: 620 20px/1.3 var(--font-display); font-variation-settings: "opsz" 32;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.2s ease;
+}
+.status[data-tone="hot"] { color: var(--warm-ink); }
+.status[data-tone="warm"] { color: var(--warm-ink); opacity: 0.85; }
+.status[data-tone="cool"] { color: var(--muted); }
+#gauge { display: block; width: 100%; max-width: 440px; height: 50px; }
+
+.controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; width: 100%; }
+.btn {
+  min-height: 50px; padding: 0 24px; border-radius: 999px; border: 1.5px solid transparent;
+  font: 620 16px/1 var(--font-display); cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.6; cursor: progress; }
+.btn.primary { background: var(--ink); color: var(--bg); min-width: 11em; }
+.btn.primary.on { background: transparent; color: var(--ink); border-color: var(--ink); }
+.btn.secondary { background: var(--surface); border-color: var(--line); }
+.btn.secondary:hover { border-color: var(--muted); }
+
+.meter {
+  display: flex; align-items: center; gap: 10px; width: 100%; max-width: 440px;
+  font: 600 10px/1 var(--font-display); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+}
+.meter .bar { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.meter i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--cool); border-radius: 3px; }
+.meter.voiced i { background: var(--warm); }
+.meter b { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--muted); opacity: 0.7; }
+
+.err { margin: 0; max-width: 440px; color: var(--alert); font-size: 14px; text-align: center; text-wrap: pretty; }
+.link {
+  border: 0; background: none; cursor: pointer; padding: 6px 4px;
+  color: var(--muted); font-size: 14px; text-decoration: underline; text-underline-offset: 3px;
+}
+.link:hover { color: var(--ink); }
+
+/* Panel */
+.panel { display: grid; gap: 16px; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px 16px; min-width: 0; }
+.card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; margin-bottom: 10px; }
+h2 { margin: 0; font: 620 15.5px/1.25 var(--font-display); font-variation-settings: "opsz" 24; }
+.legend { display: inline-flex; align-items: center; gap: 6px; font: 500 11.5px/1 var(--font-data); color: var(--muted); }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.sw.hot { background: var(--hot); }
+.sw.warm { background: var(--warm); opacity: 0.4; margin-left: 6px; }
+.trace-box { position: relative; }
+#trace { display: block; width: 100%; height: 180px; }
+@media (min-width: 880px) { #trace { height: 230px; } }
+.trace-empty {
+  position: absolute; inset: 0 0 0 40px; margin: 0; display: grid; place-items: center; padding: 0 12px;
+  pointer-events: none;
+}
+.trace-empty span {
+  padding: 5px 12px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line);
+  color: var(--muted); font-size: 13.5px; text-align: center;
+}
+
+.stats {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px;
+  background: var(--line); border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+}
+@media (max-width: 560px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.stat { background: var(--surface); padding: 12px 14px; display: grid; gap: 5px; align-content: start; }
+.stat .k { font: 600 10.5px/1.25 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.stat .v { font: 500 23px/1.1 var(--font-data); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.stat .v small { font-size: 12.5px; letter-spacing: 0; color: var(--muted); margin-left: 6px; }
+
+.mini {
+  border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 6px 12px; cursor: pointer;
+  font: 600 12.5px/1 var(--font-display); color: var(--muted);
+}
+.mini:hover { color: var(--ink); border-color: var(--muted); }
+.mini.danger { color: var(--alert); border-color: var(--alert); }
+
+.hums { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+.hum {
+  position: relative; overflow: hidden; display: grid; gap: 3px;
+  padding: 9px 10px 12px; border-radius: 11px; border: 1px solid var(--line);
+  background: var(--chip-bg, transparent);
+  font: 500 11.5px/1.25 var(--font-data); font-variant-numeric: tabular-nums; color: var(--muted);
+}
+.hum.ok { border-color: transparent; color: var(--chip-ink, var(--ink)); }
+.hum .row { display: flex; justify-content: space-between; gap: 6px; }
+.hum.ok .row { opacity: 0.8; }
+.hum .hzv { font-size: 16.5px; font-weight: 500; color: var(--ink); letter-spacing: -0.02em; }
+.hum.ok .hzv { color: inherit; }
+.hum .bar { position: absolute; left: 0; bottom: 0; height: 3px; width: calc(var(--s, 0) * 100%); background: var(--chip-c, var(--cool)); }
+.hum.new { animation: pop 0.55s cubic-bezier(.2, .9, .3, 1.3); }
+@keyframes pop { from { transform: scale(0.85); opacity: 0; } to { transform: none; opacity: 1; } }
+.empty { margin: 0; color: var(--muted); font-size: 14px; max-width: 60ch; }
+
+details.card > summary {
+  list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+  font: 620 15.5px/1.25 var(--font-display); font-variation-settings: "opsz" 24;
+}
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary::after { content: "+"; font: 400 20px/1 var(--font-data); color: var(--muted); }
+details.card[open] > summary::after { content: "−"; }
+details.card[open] > summary { margin-bottom: 10px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font: 500 13px/1.3 var(--font-data); font-variant-numeric: tabular-nums; }
+th { text-align: left; font: 600 10.5px/1.2 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 6px 8px 8px 0; }
+td { padding: 7px 8px 7px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+th:not(:first-child), td:not(:first-child) { text-align: right; }
+.clear-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; font-size: 13.5px; color: var(--muted); }
+
+.prose { max-width: 64ch; font-size: 14.5px; }
+.prose h3 { margin: 16px 0 4px; font: 620 14px/1.3 var(--font-display); }
+.prose h3:first-child { margin-top: 0; }
+.prose p, .prose ul { margin: 0 0 8px; }
+.prose ul { padding-left: 1.2em; }
+.prose li { margin-bottom: 4px; }
+.prose a { color: inherit; text-underline-offset: 3px; }
+.prose .fine { color: var(--muted); font-size: 13.5px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hum.new { animation: none; }
+  .btn, .readout, .status, .hz { transition: none; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div>
+      <h1>Nasal Hum Tuner</h1>
+      <p class="today" id="today">Today: nothing logged yet</p>
+    </div>
+    <div class="target" role="group" aria-label="Target pitch">
+      <button type="button" id="tDown" aria-label="Lower the target by 1 hertz">−</button>
+      <div class="tval"><span class="lbl">Target</span><span id="targetVal">130</span>&nbsp;Hz</div>
+      <button type="button" id="tUp" aria-label="Raise the target by 1 hertz">+</button>
+    </div>
+  </header>
+
+  <p class="banner" id="banner" role="alert" hidden></p>
+
+  <main class="grid">
+    <section class="stage" aria-label="Live pitch">
+      <div class="orb-wrap">
+        <canvas id="orb" aria-hidden="true"></canvas>
+        <div class="readout idle" id="readout">
+          <div class="hz"><span id="hz">---.-</span><span class="unit">Hz</span></div>
+          <div class="sub" id="sub">target 130 Hz ≈ C3</div>
+        </div>
+        <span class="tag" id="demoTag" hidden>Preview signal</span>
+      </div>
+      <p class="status" id="status">Press Start, then hum with your lips closed</p>
+      <canvas id="gauge" aria-hidden="true"></canvas>
+      <div class="controls">
+        <button type="button" class="btn primary" id="startBtn">Start listening</button>
+        <button type="button" class="btn secondary" id="toneBtn">Hear 130 Hz</button>
+      </div>
+      <div class="meter" id="meter" aria-hidden="true"><span>Mic</span><div class="bar"><i id="meterFill"></i><b id="meterGate"></b></div></div>
+      <p class="err" id="err" role="alert" hidden></p>
+      <button type="button" class="link" id="demoBtn">Preview with a synthetic hum</button>
+      <p class="sr" id="announce" aria-live="polite"></p>
+    </section>
+
+    <section class="panel" aria-label="Session">
+      <div class="card">
+        <div class="card-head">
+          <h2>Pitch, last 15 seconds</h2>
+          <span class="legend"><i class="sw hot"></i><span id="legHot">±1.1 Hz</span><i class="sw warm"></i><span id="legWarm">±3.8 Hz</span></span>
+        </div>
+        <div class="trace-box">
+          <canvas id="trace" aria-hidden="true"></canvas>
+          <p class="trace-empty" id="traceEmpty"><span>Hum to draw your pitch line</span></p>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><span class="k">Humming</span><span class="v" id="stTime">0:00</span></div>
+        <div class="stat"><span class="k">Successful hums</span><span class="v" id="stOk">0<small>of 0</small></span></div>
+        <div class="stat"><span class="k" id="kNear">Within ±3.8 Hz</span><span class="v" id="stNear">—</span></div>
+        <div class="stat"><span class="k">Longest on target</span><span class="v" id="stLock">—</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Hums this session</h2><button type="button" class="mini" id="resetBtn">Reset</button></div>
+        <ol class="hums" id="hums"></ol>
+        <p class="empty" id="humsEmpty">Each hum you hold for at least a second lands here. The fill gets stronger the closer the hum stays to <span class="tgt">130</span> Hz.</p>
+      </div>
+
+      <details class="card" id="historyBox">
+        <summary>Daily history</summary>
+        <div class="table-wrap" id="histWrap" hidden>
+          <table>
+            <thead><tr><th scope="col">Day</th><th scope="col">Humming</th><th scope="col">Hums</th><th scope="col">Successful</th></tr></thead>
+            <tbody id="histBody"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="histEmpty">Days you practice with the microphone show up here. Totals stay in this browser on this device.</p>
+        <div class="clear-row" id="clearRow" hidden>
+          <button type="button" class="mini" id="clearBtn">Clear history</button>
+          <span id="clearConfirm" hidden>Delete every daily total?
+            <button type="button" class="mini danger" id="clearYes">Delete</button>
+            <button type="button" class="mini" id="clearNo">Keep</button>
+          </span>
+        </div>
+      </details>
+
+      <details class="card">
+        <summary>How it works</summary>
+        <div class="prose">
+          <h3>Why hum</h3>
+          <p>Your paranasal sinuses produce nitric oxide. Humming makes the air in your nose oscillate, which swaps air between the sinuses and the nasal cavity far faster than quiet breathing. In ten healthy volunteers, nasal nitric oxide rose about 15-fold during humming compared with a quiet exhale (<a href="https://pubmed.ncbi.nlm.nih.gov/12119224/" target="_blank" rel="noopener">Weitzberg &amp; Lundberg, 2002</a>).</p>
+          <h3>How to hum</h3>
+          <ul>
+            <li>Close your lips and hum through your nose, steady and fairly strong.</li>
+            <li>Hold the phone 15–30 cm from your face. The iPhone microphone is on the bottom edge.</li>
+            <li>Tap “Hear <span class="tgt">130</span> Hz” to get the pitch in your ear, then match it. No sound on iPhone? Turn off silent mode.</li>
+            <li>Breathe in through your nose between hums.</li>
+          </ul>
+          <h3>How the app scores</h3>
+          <p>The app reads the fundamental pitch of your hum about 60 times a second using the YIN method. Closeness is 100 on the target and falls to 50 at 50 cents away (<span id="aboutWarm">±3.8 Hz</span>). A hum counts as successful when you hold it for at least a second and its average closeness is 60 or more. “On target” means within 15 cents (<span id="aboutHot">±1.1 Hz</span>).</p>
+          <h3>On iPhone</h3>
+          <p>In Safari, tap Share, then Add to Home Screen, to open the tuner like an app. To stop Safari asking for the microphone every visit, tap the <b>aA</b> button, then Website Settings, then set Microphone to Allow.</p>
+          <p class="fine">Audio is analyzed on your device and is never recorded or uploaded. The app measures pitch only; it can't measure nitric oxide.</p>
+        </div>
+      </details>
+    </section>
+  </main>
+</div>
+
+<script>
+/* DETECTOR START */
+const PITCH = { MIN_HZ: 60, MAX_HZ: 1000, YIN_THRESHOLD: 0.15 };
+const TRACK = {
+  CLARITY: 0.75,        // 1 - YIN dip depth needed to call a frame voiced
+  ABS_MIN_RMS: 0.0008,  // floor for the loudness gate
+  GATE_X: 3,            // gate sits this far above the learned noise floor
+  ONSET_FRAMES: 3,
+  END_GAP_MS: 260,      // silence that ends a hum
+  MIN_HUM_MS: 600,      // shorter voiced bursts are ignored
+  OK_MIN_MS: 1000,
+  OK_SCORE: 60,
+  NEAR_CENTS: 50,
+  LOCK_CENTS: 15,
+  MEDIAN_N: 5,
+};
+
+function centsBetween(hz, ref) { return 1200 * Math.log2(hz / ref); }
+function closeness(cents) { const k = cents / 50; return 1 / (1 + k * k); }
+function median(arr) {
+  const s = Array.from(arr).sort((a, b) => a - b), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+// YIN pitch detector (de Cheveigné & Kawahara, 2002) over the newest N samples of x.
+function createYin(fs, minHz = PITCH.MIN_HZ, maxHz = PITCH.MAX_HZ) {
+  const tauMax = Math.ceil(fs / minHz);
+  const tauMin = Math.max(2, Math.floor(fs / maxHz));
+  const W = tauMax * 2;
+  const N = W + tauMax + 2;
+  const d = new Float64Array(tauMax + 2);
+  const cm = new Float64Array(tauMax + 2);
+
+  function firstDip(below) {
+    for (let t = tauMin; t <= tauMax; t++) {
+      if (cm[t] < below) {
+        while (t + 1 <= tauMax && cm[t + 1] < cm[t]) t++;
+        return t;
+      }
+    }
+    return -1;
+  }
+
+  function dipDepth(t) {
+    const a = cm[t - 1], b = cm[t], c = cm[t + 1];
+    const den = a + c - 2 * b;
+    return den > 0 ? Math.max(0, b - (a - c) * (a - c) / (8 * den)) : b;
+  }
+
+  function detect(x) {
+    const off = x.length - N;
+    if (off < 0) throw new Error('buffer too short');
+    let mean = 0;
+    for (let j = 0; j < W; j++) mean += x[off + j];
+    mean /= W;
+    let e = 0;
+    for (let j = 0; j < W; j++) { const v = x[off + j] - mean; e += v * v; }
+    const rms = Math.sqrt(e / W);
+    if (rms < 1e-7) return { hz: 0, clarity: 0, rms };
+
+    for (let tau = 1; tau <= tauMax + 1; tau++) {
+      let s = 0;
+      for (let j = 0; j < W; j++) { const v = x[off + j] - x[off + j + tau]; s += v * v; }
+      d[tau] = s;
+    }
+    cm[0] = 1;
+    let run = 0;
+    for (let tau = 1; tau <= tauMax + 1; tau++) {
+      run += d[tau];
+      cm[tau] = run > 0 ? d[tau] * tau / run : 1;
+    }
+
+    let tau = firstDip(PITCH.YIN_THRESHOLD);
+    if (tau < 0) {
+      // No clear dip: take the earliest dip close to the global minimum so we don't fall an octave.
+      let g = tauMin;
+      for (let t = tauMin + 1; t <= tauMax; t++) if (cm[t] < cm[g]) g = t;
+      tau = firstDip(cm[g] + 0.05);
+      if (tau < 0) tau = g;
+    }
+
+    // Octave check: with a weak fundamental the half-period dip can slip under the threshold first.
+    // Compare interpolated dip depths so a period that falls between samples isn't penalized.
+    const t2 = tau * 2;
+    if (t2 + 2 <= tauMax) {
+      const here = dipDepth(tau);
+      if (here > 0.04) {
+        let b = t2;
+        for (let t = t2 - 2; t <= t2 + 2; t++) if (cm[t] < cm[b]) b = t;
+        if (dipDepth(b) < here * 0.4) tau = b;
+      }
+    }
+
+    let bt = tau;
+    if (tau > 1 && tau <= tauMax) {
+      const a = d[tau - 1], b = d[tau], c = d[tau + 1];
+      const den = a + c - 2 * b;
+      if (den > 0) {
+        const shift = 0.5 * (a - c) / den;
+        if (Math.abs(shift) < 1) bt = tau + shift;
+      }
+    }
+    return { hz: fs / bt, clarity: 1 - Math.min(1, cm[tau]), rms };
+  }
+  return { detect, N, W, tauMin, tauMax, fs };
+}
+
+// Turns per-frame detections into hums: voicing with hysteresis, median smoothing, scoring.
+function createTracker(getTarget, on = {}) {
+  const s = {
+    nf: 0.001, gate: TRACK.ABS_MIN_RMS, level: 0,
+    run: 0, runStart: 0, med: [],
+    humming: false, hum: null,
+    hz: 0, cents: 0, c: 0, lockStart: -1, lockMs: 0,
+    session: null,
+  };
+
+  function resetSession() { s.session = { n: 0, hums: 0, ok: 0, humMs: 0, nearMs: 0, bestLockMs: 0 }; }
+  resetSession();
+
+  function startHum(t0) {
+    s.humming = true;
+    s.hum = { startT: t0, lastT: t0, voicedMs: 0, cSum: 0, nearMs: 0, lockMs: 0, hzs: [] };
+    s.lockStart = -1; s.lockMs = 0;
+    if (on.start) on.start(t0);
+  }
+
+  function addFrame(t) {
+    const h = s.hum, target = getTarget();
+    const hz = median(s.med);
+    const cents = centsBetween(hz, target);
+    const c = closeness(cents);
+    const dt = Math.min(t - h.lastT, TRACK.END_GAP_MS);
+    h.voicedMs += dt;
+    h.cSum += c * dt;
+    if (Math.abs(cents) <= TRACK.NEAR_CENTS) h.nearMs += dt;
+    if (Math.abs(cents) <= TRACK.LOCK_CENTS) {
+      if (s.lockStart < 0) s.lockStart = t;
+      s.lockMs = t - s.lockStart;
+      if (s.lockMs > h.lockMs) h.lockMs = s.lockMs;
+    } else {
+      s.lockStart = -1; s.lockMs = 0;
+    }
+    h.hzs.push(hz);
+    h.lastT = t;
+    s.hz = hz; s.cents = cents; s.c = c;
+    if (on.frame) on.frame(t, hz, cents, c);
+  }
+
+  function endHum() {
+    const h = s.hum;
+    s.humming = false; s.hum = null; s.lockStart = -1; s.lockMs = 0; s.run = 0; s.med.length = 0;
+    const dur = h.lastT - h.startT;
+    if (dur < TRACK.MIN_HUM_MS || h.voicedMs <= 0) { if (on.discard) on.discard(); return null; }
+    const ss = s.session;
+    const score = Math.round(100 * h.cSum / h.voicedMs);
+    const seg = {
+      n: ++ss.n, dur, hz: median(h.hzs), score, nearMs: h.nearMs, lockMs: h.lockMs,
+      target: getTarget(), ok: dur >= TRACK.OK_MIN_MS && score >= TRACK.OK_SCORE,
+    };
+    ss.hums++; ss.humMs += dur; ss.nearMs += h.nearMs;
+    if (seg.ok) ss.ok++;
+    if (h.lockMs > ss.bestLockMs) ss.bestLockMs = h.lockMs;
+    if (on.end) on.end(seg);
+    return seg;
+  }
+
+  // r: detector result or null (no fresh audio); suppressed: ignore this frame (e.g. our own tone).
+  function push(t, r, suppressed) {
+    s.level = r ? r.rms : 0;
+    s.gate = Math.max(TRACK.ABS_MIN_RMS, s.nf * TRACK.GATE_X);
+    let voiced = false;
+    if (r && !suppressed) {
+      voiced = r.rms > s.gate && r.clarity >= TRACK.CLARITY && r.hz >= PITCH.MIN_HZ && r.hz <= PITCH.MAX_HZ;
+      if (!voiced && !s.humming) {
+        // Learn the room's noise floor between hums: fall fast, rise slowly.
+        s.nf += (r.rms - s.nf) * (r.rms < s.nf ? 0.15 : 0.012);
+        if (s.nf < 1e-5) s.nf = 1e-5;
+      }
+    }
+    if (voiced) {
+      if (s.run === 0) { s.runStart = t; if (!s.humming) s.med.length = 0; }
+      s.run++;
+      s.med.push(r.hz);
+      if (s.med.length > TRACK.MEDIAN_N) s.med.shift();
+      if (!s.humming && s.run >= TRACK.ONSET_FRAMES) startHum(s.runStart);
+      if (s.humming) addFrame(t);
+    } else {
+      s.run = 0;
+      if (s.humming && t - s.hum.lastT > TRACK.END_GAP_MS) endHum();
+    }
+  }
+
+  function flush() { if (s.humming) endHum(); s.run = 0; s.med.length = 0; }
+
+  return { s, push, flush, resetSession };
+}
+/* DETECTOR END */
+
+(() => {
+'use strict';
+const $ = (id) => document.getElementById(id);
+const E = {
+  today: $('today'), tDown: $('tDown'), tUp: $('tUp'), targetVal: $('targetVal'), banner: $('banner'),
+  readout: $('readout'), hz: $('hz'), sub: $('sub'), demoTag: $('demoTag'), status: $('status'),
+  startBtn: $('startBtn'), toneBtn: $('toneBtn'), meter: $('meter'), meterFill: $('meterFill'), meterGate: $('meterGate'),
+  err: $('err'), demoBtn: $('demoBtn'), announce: $('announce'), traceEmpty: $('traceEmpty'),
+  stTime: $('stTime'), stOk: $('stOk'), stNear: $('stNear'), stLock: $('stLock'), kNear: $('kNear'),
+  hums: $('hums'), humsEmpty: $('humsEmpty'), resetBtn: $('resetBtn'),
+  histWrap: $('histWrap'), histBody: $('histBody'), histEmpty: $('histEmpty'),
+  clearRow: $('clearRow'), clearBtn: $('clearBtn'), clearConfirm: $('clearConfirm'), clearYes: $('clearYes'), clearNo: $('clearNo'),
+  legHot: $('legHot'), legWarm: $('legWarm'), aboutHot: $('aboutHot'), aboutWarm: $('aboutWarm'),
+};
+const FONT_DATA = '"IBM Plex Mono", ui-monospace, Menlo, monospace';
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+
+/* ---------- Saved settings and daily totals (this browser only) ---------- */
+const KEY = 'nasal-hum-tuner.v1';
+function loadStore() {
+  try { const v = JSON.parse(localStorage.getItem(KEY)); return v && typeof v === 'object' ? v : {}; }
+  catch { return {}; }
+}
+const saved = loadStore();
+const clampTarget = (v) => Math.min(400, Math.max(70, Math.round(v)));
+let target = clampTarget(Number(saved.target) || 130);
+const days = {};
+if (saved.days && typeof saved.days === 'object') {
+  for (const [k, d] of Object.entries(saved.days)) {
+    if (/^\d{4}-\d\d-\d\d$/.test(k) && d && Number.isFinite(d.ms)) days[k] = { ms: +d.ms || 0, hums: +d.hums || 0, ok: +d.ok || 0 };
+  }
+}
+function persist() { try { localStorage.setItem(KEY, JSON.stringify({ target, days })); } catch {} }
+
+/* ---------- Formatting ---------- */
+const pad2 = (n) => String(n).padStart(2, '0');
+function fmtDur(ms) {
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  return h ? `${h}:${pad2(m)}:${pad2(ss)}` : `${m}:${pad2(ss)}`;
+}
+const dayKey = (d = new Date()) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+function fmtDay(k) {
+  if (k === dayKey()) return 'Today';
+  const [y, m, d] = k.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+const NOTES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
+function noteOf(hz) {
+  const m = Math.round(69 + 12 * Math.log2(hz / 440));
+  return NOTES[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
+}
+const hzAt = (cents) => target * Math.pow(2, cents / 1200);
+const hzBand = (cents) => (hzAt(cents) - target).toFixed(1);
+
+/* ---------- Theme colors for canvas ---------- */
+let theme = {};
+function hexToRgb(h) {
+  h = h.trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  const n = parseInt(h, 16);
+  return Number.isFinite(n) ? [(n >> 16) & 255, (n >> 8) & 255, n & 255] : [128, 128, 128];
+}
+function readTheme() {
+  const cs = getComputedStyle(document.documentElement);
+  const get = (n) => hexToRgb(cs.getPropertyValue(n));
+  theme = {
+    bg: get('--bg'), surface: get('--surface'), ink: get('--ink'), muted: get('--muted'), line: get('--line'),
+    cool: get('--cool'), warm: get('--warm'), hot: get('--hot'),
+    chipMax: parseFloat(cs.getPropertyValue('--chip-max')) || 0.4,
+    dark: darkQuery.matches,
+  };
+}
+const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+function heat(c) {
+  c = clamp01(c);
+  return c < 0.5 ? mix(theme.cool, theme.warm, c / 0.5) : mix(theme.warm, theme.hot, (c - 0.5) / 0.5);
+}
+// Lines on the light theme get a touch of ink so gold stays visible on pale ground.
+const strokeOf = (col) => (theme.dark ? col : mix(col, theme.ink, 0.22));
+const rgba = (c, a) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+
+/* ---------- Audio engine ---------- */
+const eng = {
+  ctx: null, mode: null, starting: false, stream: null, nodes: [], sources: [],
+  an: null, raw: null, bytes: null, dec: null, D: 1, yin: null,
+  suppressUntil: 0, lastCT: -1, demoTimer: 0,
+};
+let sessionMode = null;
+let toneUntil = 0;
+let stoppedAt = 0;
+
+function audioCtx() {
+  if (!eng.ctx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try { eng.ctx = new AC({ latencyHint: 'interactive' }); } catch { eng.ctx = new AC(); }
+    eng.ctx.onstatechange = onCtxState;
+  }
+  if (eng.ctx.state !== 'running') eng.ctx.resume().catch(() => {});
+  return eng.ctx;
+}
+
+function buildChain(ac, src) {
+  const biquad = (type, f) => { const b = ac.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = 0.7071; return b; };
+  const hp = biquad('highpass', 55), lp1 = biquad('lowpass', 1400), lp2 = biquad('lowpass', 1400);
+  const D = Math.max(1, Math.floor(ac.sampleRate / 16000)); // analyze at 16–32 kHz
+  const yin = createYin(ac.sampleRate / D);
+  let size = 2048;
+  while (size < yin.N * D) size *= 2;
+  const an = ac.createAnalyser();
+  an.fftSize = Math.min(32768, size);
+  an.smoothingTimeConstant = 0;
+  const mute = ac.createGain();
+  mute.gain.value = 0;
+  src.connect(hp); hp.connect(lp1); lp1.connect(lp2); lp2.connect(an); an.connect(mute); mute.connect(ac.destination);
+  eng.nodes.push(src, hp, lp1, lp2, an, mute);
+  eng.an = an;
+  eng.raw = new Float32Array(an.fftSize);
+  eng.bytes = an.getFloatTimeDomainData ? null : new Uint8Array(an.fftSize);
+  eng.dec = new Float32Array(yin.N);
+  eng.D = D;
+  eng.yin = yin;
+  eng.lastCT = -1;
+}
+
+function teardown() {
+  clearTimeout(eng.demoTimer);
+  for (const s of eng.sources) { try { s.stop(); } catch {} }
+  for (const n of eng.nodes) { try { n.disconnect(); } catch {} }
+  eng.sources = []; eng.nodes = []; eng.an = null;
+  if (eng.stream) { eng.stream.getTracks().forEach((t) => t.stop()); eng.stream = null; }
+}
+
+function stopEngine({ suspend }) {
+  tracker.flush();
+  teardown();
+  eng.mode = null;
+  E.demoTag.hidden = true;
+  releaseWake();
+  stoppedAt = performance.now();
+  if (suspend && eng.ctx && eng.ctx.state === 'running' && performance.now() > toneUntil) eng.ctx.suspend().catch(() => {});
+  updateControls();
+  ensureLoop();
+}
+
+function setMode(m) {
+  if (m !== sessionMode) { resetSession(); sessionMode = m; }
+  eng.mode = m;
+  E.demoTag.hidden = m !== 'demo';
+}
+
+const MSG = {
+  insecure: 'Microphone access needs a secure address. Open this page from its https:// link (or localhost on a computer).',
+  noApi: isIOS
+    ? 'This browser can’t use the microphone. Open the page in Safari; apps like Instagram, Gmail and Messages previews use a built-in browser that blocks it.'
+    : 'This browser can’t use the microphone. Try a current version of Safari, Chrome, Edge or Firefox.',
+  noAudio: 'This browser doesn’t support Web Audio, which the tuner needs.',
+};
+function micError(e) {
+  const n = e && e.name;
+  if (n === 'NotAllowedError' || n === 'SecurityError' || n === 'PermissionDeniedError') {
+    return isIOS
+      ? 'Microphone access is blocked. In Safari, tap the aA button, then Website Settings, set Microphone to Allow, and press Start again. Also check Settings › Privacy & Security › Microphone.'
+      : 'Microphone access is blocked. Allow it from the icon in the address bar (Chrome) or Safari › Settings for This Website, then press Start again. If that doesn’t help, check System Settings › Privacy & Security › Microphone.';
+  }
+  if (n === 'NotFoundError' || n === 'OverconstrainedError' || n === 'DevicesNotFoundError') return 'No microphone was found. Connect one and press Start again.';
+  if (n === 'NotReadableError' || n === 'AbortError' || n === 'TrackStartError') return 'The microphone is busy in another app or tab. Close it there and press Start again.';
+  return `The microphone couldn’t start (${n || 'unknown error'}). Reload the page and try again.`;
+}
+function showErr(text) { E.err.textContent = text; E.err.hidden = false; }
+function hideErr() { E.err.hidden = true; E.err.textContent = ''; }
+
+async function startMic() {
+  if (eng.starting) return;
+  hideErr();
+  if (!window.isSecureContext) { showErr(MSG.insecure); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { showErr(MSG.noApi); return; }
+  const ac = audioCtx(); // created inside the tap so iOS lets it run
+  if (!ac) { showErr(MSG.noAudio); return; }
+  eng.starting = true;
+  updateControls();
+  ensureLoop();
+  let stream = null, err = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 1 } },
+    });
+  } catch (e) {
+    err = e;
+    if (e && (e.name === 'OverconstrainedError' || e.name === 'TypeError')) {
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); err = null; } catch (e2) { err = e2; }
+    }
+  }
+  eng.starting = false;
+  if (!stream) { updateControls(); showErr(micError(err)); return; }
+  if (eng.mode) stopEngine({ suspend: false });
+  eng.stream = stream;
+  const track = stream.getAudioTracks()[0];
+  if (track) track.addEventListener('ended', onTrackEnded);
+  buildChain(ac, ac.createMediaStreamSource(stream));
+  setMode('mic');
+  if (ac.state !== 'running') { try { await ac.resume(); } catch {} }
+  requestWake();
+  updateControls();
+  ensureLoop();
+}
+
+function onTrackEnded() {
+  if (eng.mode !== 'mic') return;
+  stopEngine({ suspend: true });
+  showErr('The microphone stopped, possibly because another app started using it. Press Start to continue.');
+}
+
+function onCtxState() {
+  if (eng.ctx && eng.ctx.state !== 'running') tracker.flush();
+  updateControls();
+  ensureLoop();
+}
+
+/* Synthetic hum for the preview: runs through the same filters and detector as the microphone, silently. */
+const DEMO = [
+  { d: 3.6, f: [[0, 117], [1.6, 124], [3.6, 127.2]] },
+  { d: 4.4, f: [[0, 137], [1.1, 131.4], [1.9, 130.2], [4.4, 130.0]] },
+  { d: 5.0, f: [[0, 129.7], [2.5, 130.3], [5.0, 129.9]] },
+  { d: 2.8, f: [[0, 147], [2.8, 143.5]] },
+];
+function harmonicWave(ac, amps) {
+  return ac.createPeriodicWave(new Float32Array(amps.length), new Float32Array(amps));
+}
+function startDemo() {
+  hideErr();
+  const ac = audioCtx();
+  if (!ac) { showErr(MSG.noAudio); return; }
+  if (eng.mode) stopEngine({ suspend: false });
+  const osc = ac.createOscillator();
+  osc.setPeriodicWave(harmonicWave(ac, [0, 1, 0.55, 0.3, 0.2, 0.12, 0.08, 0.05, 0.03]));
+  const lfo = ac.createOscillator();
+  lfo.frequency.value = 5.2;
+  const lfoDepth = ac.createGain();
+  lfoDepth.gain.value = 0.35;
+  lfo.connect(lfoDepth); lfoDepth.connect(osc.frequency);
+  const env = ac.createGain();
+  env.gain.value = 0;
+  osc.connect(env);
+  const noise = ac.createBufferSource();
+  const buf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
+  const ch = buf.getChannelData(0);
+  for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+  noise.buffer = buf; noise.loop = true;
+  const noiseGain = ac.createGain();
+  noiseGain.gain.value = 0.0015;
+  noise.connect(noiseGain);
+  const bus = ac.createGain();
+  env.connect(bus); noiseGain.connect(bus);
+  eng.nodes.push(osc, lfo, lfoDepth, env, noise, noiseGain);
+  eng.sources.push(osc, lfo, noise);
+  buildChain(ac, bus);
+
+  const t0 = ac.currentTime + 0.15, GAP = 1.1, CYCLES = 12;
+  let t = t0;
+  for (let c = 0; c < CYCLES; c++) {
+    for (const h of DEMO) {
+      osc.frequency.setValueAtTime(h.f[0][1], t);
+      for (let i = 1; i < h.f.length; i++) osc.frequency.linearRampToValueAtTime(h.f[i][1], t + h.f[i][0]);
+      env.gain.setValueAtTime(0, t);
+      env.gain.linearRampToValueAtTime(0.08, t + 0.08);
+      env.gain.setValueAtTime(0.08, t + h.d - 0.12);
+      env.gain.linearRampToValueAtTime(0, t + h.d);
+      t += h.d + GAP;
+    }
+  }
+  osc.start(t0); lfo.start(t0); noise.start(t0);
+  eng.demoTimer = setTimeout(() => { if (eng.mode === 'demo') stopEngine({ suspend: true }); }, (t - t0 + 0.5) * 1000);
+  setMode('demo');
+  updateControls();
+  ensureLoop();
+}
+
+function playTone() {
+  const ac = audioCtx();
+  if (!ac) { showErr(MSG.noAudio); return; }
+  const d = 1.6, t0 = ac.currentTime + 0.03;
+  const osc = ac.createOscillator();
+  // Rich harmonics so small phone speakers still carry the pitch.
+  osc.setPeriodicWave(harmonicWave(ac, [0, 1, 0.7, 0.5, 0.35, 0.22, 0.14, 0.09]));
+  osc.frequency.value = target;
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(0.3, t0 + 0.06);
+  g.gain.setValueAtTime(0.3, t0 + d - 0.2);
+  g.gain.linearRampToValueAtTime(0, t0 + d);
+  osc.connect(g); g.connect(ac.destination);
+  osc.start(t0); osc.stop(t0 + d + 0.05);
+  osc.onended = () => {
+    try { g.disconnect(); } catch {}
+    if (!eng.mode && !eng.starting && eng.ctx.state === 'running') eng.ctx.suspend().catch(() => {});
+  };
+  const now = performance.now();
+  toneUntil = now + d * 1000;
+  if (eng.mode === 'mic') { tracker.flush(); eng.suppressUntil = now + (d + 0.45) * 1000; }
+  ensureLoop();
+}
+
+/* ---------- Screen wake lock ---------- */
+let wake = null;
+async function requestWake() {
+  if (!('wakeLock' in navigator) || wake || document.hidden) return;
+  try {
+    wake = await navigator.wakeLock.request('screen');
+    wake.addEventListener('release', () => { wake = null; });
+  } catch { wake = null; }
+}
+function releaseWake() { if (wake) { wake.release().catch(() => {}); wake = null; } }
+
+/* ---------- Tracker wiring ---------- */
+const trace = [];
+const tracker = createTracker(() => target, {
+  frame(t, hz) {
+    trace.push({ t, hz });
+    if (!E.traceEmpty.hidden) E.traceEmpty.hidden = true;
+  },
+  end: onHumEnd,
+});
+
+function analyze(now) {
+  const ac = eng.ctx, an = eng.an;
+  const ct = ac.currentTime;
+  if (ct === eng.lastCT) { tracker.push(now, null, true); return; } // audio clock stalled: no fresh samples
+  eng.lastCT = ct;
+  const raw = eng.raw;
+  if (eng.bytes) {
+    an.getByteTimeDomainData(eng.bytes);
+    for (let i = 0; i < raw.length; i++) raw[i] = (eng.bytes[i] - 128) / 128;
+  } else {
+    an.getFloatTimeDomainData(raw);
+  }
+  const { dec, D, yin } = eng;
+  const start = raw.length - yin.N * D;
+  for (let i = 0; i < yin.N; i++) dec[i] = raw[start + i * D];
+  tracker.push(now, yin.detect(dec), now < eng.suppressUntil);
+}
+
+function onHumEnd(seg) {
+  addChip(seg);
+  if (seg.ok) burst(seg.score / 100);
+  vis.lastSeg = seg;
+  vis.lastSegAt = performance.now();
+  E.announce.textContent = `Hum ${seg.n}: ${(seg.dur / 1000).toFixed(1)} seconds at ${seg.hz.toFixed(1)} hertz, score ${seg.score}${seg.ok ? ', successful' : ''}.`;
+  if (sessionMode === 'mic') {
+    const k = dayKey();
+    const d = days[k] || (days[k] = { ms: 0, hums: 0, ok: 0 });
+    d.ms += seg.dur; d.hums++; if (seg.ok) d.ok++;
+    const keys = Object.keys(days).sort();
+    while (keys.length > 400) delete days[keys.shift()];
+    persist();
+    renderToday();
+    renderHistory();
+  }
+  renderStats();
+}
+
+/* ---------- Hum chips ---------- */
+function luminance(c) {
+  const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+}
+const contrast = (a, b) => { const x = luminance(a), y = luminance(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+function paintChip(li) {
+  const s = Number(li.dataset.score) / 100, ok = li.dataset.ok === '1';
+  const col = heat(s);
+  li.style.setProperty('--s', s.toFixed(3));
+  li.style.setProperty('--chip-c', rgba(strokeOf(col), 1));
+  if (ok) {
+    // The fill strengthens toward gold as the score rises; text takes whichever ink reads better on it.
+    const fill = mix(theme.surface, col, theme.chipMax * (0.3 + 0.7 * s));
+    const onHot = hexToRgb(getComputedStyle(document.documentElement).getPropertyValue('--on-hot'));
+    li.style.setProperty('--chip-bg', rgba(fill, 1));
+    li.style.setProperty('--chip-ink', rgba(contrast(fill, onHot) > contrast(fill, theme.ink) ? onHot : theme.ink, 1));
+  } else {
+    li.style.setProperty('--chip-bg', 'transparent');
+    li.style.removeProperty('--chip-ink');
+  }
+}
+function addChip(seg) {
+  const li = document.createElement('li');
+  li.className = 'hum' + (seg.ok ? ' ok' : '') + (reduceMotion.matches ? '' : ' new');
+  li.dataset.score = String(seg.score);
+  li.dataset.ok = seg.ok ? '1' : '0';
+  li.innerHTML =
+    `<span class="row"><span>#${seg.n}${seg.ok ? ' ✓' : ''}</span><span>${(seg.dur / 1000).toFixed(1)} s</span></span>` +
+    `<span class="hzv">${seg.hz.toFixed(1)} Hz</span>` +
+    `<span class="row"><span>score</span><span>${seg.score}</span></span><i class="bar"></i>`;
+  li.setAttribute('aria-label', `Hum ${seg.n}, ${seg.hz.toFixed(1)} hertz, ${(seg.dur / 1000).toFixed(1)} seconds, score ${seg.score}${seg.ok ? ', successful' : ''}`);
+  paintChip(li);
+  E.hums.prepend(li);
+  E.humsEmpty.hidden = true;
+  while (E.hums.children.length > 80) E.hums.lastElementChild.remove();
+}
+
+function resetSession() {
+  tracker.flush();
+  tracker.resetSession();
+  E.hums.textContent = '';
+  E.humsEmpty.hidden = false;
+  trace.length = 0;
+  E.traceEmpty.hidden = false;
+  Object.assign(vis, { lastSeg: null, lastHz: 0, hasCents: false, puckA: 0, ripples: [] });
+  renderStats();
+  renderLive(performance.now());
+  drawAll();
+}
+
+/* ---------- Visual state ---------- */
+const vis = {
+  cs: 0, cents: 0, hasCents: false, puckA: 0, lit: false, flash: 0,
+  ripples: [], lastRipple: 0, lastHz: 0, lastSeg: null, lastSegAt: 0, meter: 0,
+};
+
+function burst(s) {
+  vis.flash = 1;
+  if (reduceMotion.matches) return;
+  const now = performance.now();
+  vis.ripples.push({ t: now, life: 1300, a: 1, w: 5, c: s });
+  vis.ripples.push({ t: now + 200, life: 1300, a: 0.7, w: 3.5, c: s });
+  ensureLoop();
+}
+
+function stepVis(now, dt) {
+  const s = tracker.s;
+  const active = s.humming && eng.mode;
+  const goal = active ? s.c : 0;
+  const tau = goal > vis.cs ? 110 : active ? 150 : 450;
+  vis.cs += (goal - vis.cs) * (1 - Math.exp(-dt / tau));
+  if (vis.cs < 0.001) vis.cs = 0;
+
+  if (active) {
+    if (!vis.hasCents) { vis.cents = s.cents; vis.hasCents = true; }
+    else vis.cents += (s.cents - vis.cents) * (1 - Math.exp(-dt / 60));
+    vis.puckA = Math.min(1, vis.puckA + dt / 120);
+  } else {
+    const rest = vis.hasCents ? 0.3 : 0;
+    vis.puckA += (rest - vis.puckA) * (1 - Math.exp(-dt / 400));
+  }
+
+  if (!vis.lit && vis.cs > 0.8) { vis.lit = true; E.readout.classList.add('lit'); }
+  else if (vis.lit && vis.cs < 0.68) { vis.lit = false; E.readout.classList.remove('lit'); }
+
+  if (active && !reduceMotion.matches) {
+    const every = 1100 - 760 * vis.cs; // ripples come faster and brighter as you close in
+    if (now - vis.lastRipple > every) {
+      vis.ripples.push({ t: now, life: 1500, a: 0.18 + 0.82 * vis.cs, w: 1.2 + 2.8 * vis.cs, c: vis.cs });
+      vis.lastRipple = now;
+    }
+  }
+  vis.ripples = vis.ripples.filter((r) => now - r.t < r.life);
+  vis.flash *= Math.exp(-dt / 380);
+  if (vis.flash < 0.005) vis.flash = 0;
+}
+
+/* ---------- Canvases ---------- */
+const canv = {};
+function setupCanvas(name) {
+  const el = $(name);
+  const o = { el, g: el.getContext('2d'), w: 0, h: 0, dpr: 1 };
+  const fit = () => {
+    const r = el.getBoundingClientRect();
+    o.dpr = Math.min(3, window.devicePixelRatio || 1);
+    o.w = Math.max(1, Math.round(r.width * o.dpr));
+    o.h = Math.max(1, Math.round(r.height * o.dpr));
+    if (el.width !== o.w) el.width = o.w;
+    if (el.height !== o.h) el.height = o.h;
+  };
+  fit();
+  if ('ResizeObserver' in window) new ResizeObserver(() => { fit(); drawAll(); }).observe(el);
+  else window.addEventListener('resize', () => { fit(); drawAll(); });
+  canv[name] = o;
+}
+function circle(g, x, y, r) { g.beginPath(); g.arc(x, y, Math.max(0, r), 0, Math.PI * 2); }
+function seg(g, x1, y1, x2, y2) { g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); }
+
+function drawOrb(now) {
+  const { g, w, h, dpr } = canv.orb;
+  g.clearRect(0, 0, w, h);
+  const cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - 2 * dpr, rT = R * 0.66;
+  const cs = vis.cs, col = heat(cs);
+
+  if (cs > 0.003) {
+    const gr = g.createRadialGradient(cx, cy, rT * 0.5, cx, cy, R);
+    gr.addColorStop(0, rgba(col, 0.5 * cs));
+    gr.addColorStop(0.55, rgba(col, 0.16 * cs));
+    gr.addColorStop(1, rgba(col, 0));
+    g.fillStyle = gr;
+    circle(g, cx, cy, R); g.fill();
+  }
+
+  g.lineWidth = dpr;
+  g.strokeStyle = rgba(theme.line, 1);
+  g.setLineDash([2 * dpr, 5 * dpr]);
+  circle(g, cx, cy, R - dpr); g.stroke();
+  g.setLineDash([]);
+
+  for (const r of vis.ripples) {
+    const k = (now - r.t) / r.life;
+    if (k < 0) continue;
+    const e = 1 - Math.pow(1 - k, 3);
+    g.lineWidth = r.w * dpr * (1 - 0.5 * k);
+    g.strokeStyle = rgba(strokeOf(heat(r.c)), r.a * Math.pow(1 - k, 1.6));
+    circle(g, cx, cy, rT + (R - rT) * e); g.stroke();
+  }
+
+  circle(g, cx, cy, rT);
+  g.fillStyle = rgba(theme.surface, 1);
+  g.fill();
+  const fillA = Math.min(1, Math.pow(cs, 2.2) * 0.95 + vis.flash * 0.45);
+  if (fillA > 0.003) {
+    const dg = g.createRadialGradient(cx, cy - rT * 0.3, rT * 0.1, cx, cy, rT);
+    dg.addColorStop(0, rgba(theme.hot, fillA));
+    dg.addColorStop(1, rgba(vis.flash > cs ? theme.hot : col, fillA * 0.85));
+    g.fillStyle = dg;
+    circle(g, cx, cy, rT); g.fill();
+  }
+  g.lineWidth = 1.5 * dpr;
+  g.strokeStyle = rgba(theme.line, 1);
+  circle(g, cx, cy, rT); g.stroke();
+
+  // Pitch ring: closes in on the target ring as the hum approaches the target.
+  if (vis.hasCents && vis.puckA > 0.01) {
+    const dist = Math.min(1, Math.abs(vis.cents) / 300);
+    const c = closeness(vis.cents);
+    g.lineWidth = (2 + 3 * c) * dpr;
+    g.strokeStyle = rgba(strokeOf(heat(c)), vis.puckA);
+    circle(g, cx, cy, rT + 3 * dpr + (R - rT - 7 * dpr) * dist); g.stroke();
+  }
+}
+
+const GAUGE_RANGE = 400;
+function niceStep(span, maxTicks) { return [1, 2, 5, 10, 20, 25, 50, 100].find((s) => span / s <= maxTicks) || 100; }
+
+function drawGauge() {
+  const { g, w, h, dpr } = canv.gauge;
+  g.clearRect(0, 0, w, h);
+  const pad = 14 * dpr, y = 15 * dpr;
+  const X = (c) => pad + (Math.max(-GAUGE_RANGE, Math.min(GAUGE_RANGE, c)) + GAUGE_RANGE) / (2 * GAUGE_RANGE) * (w - 2 * pad);
+  g.lineCap = 'round';
+  g.strokeStyle = rgba(theme.line, 1); g.lineWidth = 4 * dpr;
+  seg(g, X(-GAUGE_RANGE), y, X(GAUGE_RANGE), y);
+  g.lineCap = 'butt';
+  g.strokeStyle = rgba(theme.warm, theme.dark ? 0.4 : 0.45); g.lineWidth = 8 * dpr;
+  seg(g, X(-50), y, X(50), y);
+  g.strokeStyle = rgba(theme.hot, 1); g.lineWidth = 8 * dpr;
+  seg(g, X(-15), y, X(15), y);
+
+  const lo = hzAt(-GAUGE_RANGE), hi = hzAt(GAUGE_RANGE);
+  const major = niceStep(hi - lo, 7), minor = major / 2;
+  const xT = X(0);
+  g.font = `500 ${10.5 * dpr}px ${FONT_DATA}`;
+  g.textAlign = 'center';
+  g.textBaseline = 'top';
+  g.lineWidth = dpr;
+  for (let i = Math.ceil(lo / minor); i * minor <= hi; i++) {
+    const v = i * minor, x = X(centsBetween(v, target)), isMajor = i % 2 === 0;
+    g.strokeStyle = rgba(theme.muted, isMajor ? 0.8 : 0.4);
+    seg(g, x, y + 7 * dpr, x, y + (isMajor ? 13 : 10) * dpr);
+    if (isMajor && Math.abs(x - xT) > 30 * dpr) {
+      g.fillStyle = rgba(theme.muted, 1);
+      g.fillText(String(Math.round(v * 10) / 10), x, y + 17 * dpr);
+    }
+  }
+  g.strokeStyle = rgba(theme.ink, 0.9); g.lineWidth = 1.5 * dpr;
+  seg(g, xT, y - 9 * dpr, xT, y + 13 * dpr);
+  g.fillStyle = rgba(theme.ink, 1);
+  g.font = `600 ${11 * dpr}px ${FONT_DATA}`;
+  g.fillText(String(target), xT, y + 17 * dpr);
+
+  if (vis.hasCents && vis.puckA > 0.01) {
+    const c = vis.cents, col = rgba(strokeOf(heat(closeness(c))), 1);
+    g.globalAlpha = vis.puckA;
+    g.fillStyle = col;
+    if (Math.abs(c) > GAUGE_RANGE) {
+      const dir = Math.sign(c), x = X(c) + dir * 4 * dpr, s = 7 * dpr;
+      g.beginPath(); g.moveTo(x + dir * s, y); g.lineTo(x - dir * s * 0.4, y - s); g.lineTo(x - dir * s * 0.4, y + s); g.closePath(); g.fill();
+    } else {
+      circle(g, X(c), y, 7.5 * dpr); g.fill();
+      g.lineWidth = 2.5 * dpr; g.strokeStyle = rgba(theme.bg, 1); g.stroke();
+    }
+    g.globalAlpha = 1;
+  }
+}
+
+const TRACE_SPAN = 15000, TRACE_RANGE = 500;
+function drawTrace(now) {
+  const { g, w, h, dpr } = canv.trace;
+  g.clearRect(0, 0, w, h);
+  const L = 40 * dpr, Rp = 4 * dpr, T = 6 * dpr, B = 6 * dpr;
+  const pw = w - L - Rp, ph = h - T - B;
+  const Y = (c) => T + ph / 2 - Math.max(-TRACE_RANGE, Math.min(TRACE_RANGE, c)) / TRACE_RANGE * (ph / 2);
+  const X = (t) => L + pw * (1 - (now - t) / TRACE_SPAN);
+
+  g.fillStyle = rgba(theme.warm, theme.dark ? 0.12 : 0.13);
+  g.fillRect(L, Y(50), pw, Y(-50) - Y(50));
+  g.fillStyle = rgba(theme.hot, theme.dark ? 0.22 : 0.32);
+  g.fillRect(L, Y(15), pw, Y(-15) - Y(15));
+
+  const lo = hzAt(-TRACE_RANGE), hi = hzAt(TRACE_RANGE), step = niceStep(hi - lo, 7), yT = Y(0);
+  g.font = `500 ${10 * dpr}px ${FONT_DATA}`;
+  g.textAlign = 'right';
+  g.textBaseline = 'middle';
+  g.lineWidth = dpr;
+  for (let i = Math.ceil(lo / step); i * step <= hi; i++) {
+    const v = i * step, yy = Y(centsBetween(v, target));
+    if (Math.abs(yy - yT) < 13 * dpr) continue;
+    g.strokeStyle = rgba(theme.line, 1);
+    seg(g, L, yy, L + pw, yy);
+    g.fillStyle = rgba(theme.muted, 1);
+    g.fillText(String(v), L - 6 * dpr, yy);
+  }
+  g.strokeStyle = rgba(theme.ink, 0.5);
+  g.setLineDash([4 * dpr, 4 * dpr]);
+  seg(g, L, yT, L + pw, yT);
+  g.setLineDash([]);
+  g.fillStyle = rgba(theme.ink, 1);
+  g.font = `600 ${10.5 * dpr}px ${FONT_DATA}`;
+  g.fillText(String(target), L - 6 * dpr, yT);
+
+  while (trace.length && now - trace[0].t > TRACE_SPAN + 500) trace.shift();
+  g.save();
+  g.beginPath(); g.rect(L, 0, pw, h); g.clip();
+  g.lineWidth = 2.6 * dpr; g.lineCap = 'round'; g.lineJoin = 'round';
+  for (let i = 1; i < trace.length; i++) {
+    const a = trace[i - 1], b = trace[i];
+    if (b.t - a.t > 160) continue;
+    const ca = centsBetween(a.hz, target), cb = centsBetween(b.hz, target);
+    g.strokeStyle = rgba(strokeOf(heat(closeness(cb))), Math.abs(cb) > TRACE_RANGE ? 0.35 : 1);
+    seg(g, X(a.t), Y(ca), X(b.t), Y(cb));
+  }
+  g.restore();
+}
+
+function drawAll(now = performance.now()) {
+  if (!canv.orb) return;
+  drawOrb(now); drawGauge(); drawTrace(now);
+}
+
+/* ---------- Text UI ---------- */
+function renderLive(now) {
+  const s = tracker.s, active = s.humming && eng.mode;
+  if (active) {
+    E.hz.textContent = s.hz.toFixed(1);
+    const diff = s.hz - target;
+    E.sub.textContent = `${noteOf(s.hz)} · ${Math.abs(diff) < 0.05 ? 'on target' : `${Math.abs(diff).toFixed(1)} Hz ${diff < 0 ? 'low' : 'high'}`}`;
+    E.readout.classList.remove('idle');
+    vis.lastHz = s.hz;
+  } else if (vis.lastHz) {
+    E.hz.textContent = vis.lastHz.toFixed(1);
+    E.sub.textContent = 'last hum';
+    E.readout.classList.add('idle');
+  } else {
+    E.hz.textContent = '---.-';
+    E.sub.textContent = `target ${target} Hz ≈ ${noteOf(target)}`;
+    E.readout.classList.add('idle');
+  }
+
+  let text, tone = '';
+  if (eng.starting) text = 'Allow microphone access to begin';
+  else if (!eng.mode) text = now < toneUntil ? `Listen: ${target} Hz` : vis.lastSeg ? 'Paused. Press Start to keep going' : 'Press Start, then hum with your lips closed';
+  else if (eng.ctx && eng.ctx.state !== 'running') text = 'Audio paused. Tap Resume';
+  else if (now < eng.suppressUntil) text = `Listen: ${target} Hz, then match it`;
+  else if (active) {
+    const a = Math.abs(s.cents), secs = ((s.hum.lastT - s.hum.startT) / 1000).toFixed(1);
+    if (a <= TRACK.LOCK_CENTS) { text = s.lockMs >= 500 ? `Locked on ${target} Hz · ${secs} s` : `On target · ${secs} s`; tone = 'hot'; }
+    else if (a <= TRACK.NEAR_CENTS) { text = `${s.cents < 0 ? 'A touch higher' : 'A touch lower'} · ${secs} s`; tone = 'warm'; }
+    else { text = s.cents < 0 ? 'Go higher ↑' : 'Go lower ↓'; tone = 'cool'; }
+  } else if (vis.lastSeg && now - vis.lastSegAt < 2600) {
+    const g = vis.lastSeg;
+    text = `Hum ${g.n}${g.ok ? ' ✓' : ''} · ${g.hz.toFixed(1)} Hz · score ${g.score}`;
+    tone = g.ok ? 'hot' : '';
+  } else text = eng.mode === 'demo' ? 'Playing a synthetic hum' : 'Listening. Hum through your nose';
+  if (E.status.textContent !== text) E.status.textContent = text;
+  if ((E.status.dataset.tone || '') !== tone) E.status.dataset.tone = tone;
+}
+
+function renderStats() {
+  const s = tracker.s, ss = s.session, h = s.hum;
+  const cur = s.humming && h.lastT - h.startT >= TRACK.MIN_HUM_MS ? h : null;
+  const humMs = ss.humMs + (cur ? cur.lastT - cur.startT : 0);
+  const near = ss.nearMs + (cur ? cur.nearMs : 0);
+  const lock = Math.max(ss.bestLockMs, cur ? cur.lockMs : 0);
+  E.stTime.textContent = fmtDur(humMs);
+  E.stOk.innerHTML = `${ss.ok}<small>of ${ss.hums}</small>`;
+  E.stNear.textContent = humMs > 0 ? `${Math.round(100 * Math.min(1, near / humMs))}%` : '—';
+  E.stLock.textContent = lock > 0 ? `${(lock / 1000).toFixed(1)} s` : '—';
+}
+
+const pct = (rms) => (rms > 0 ? clamp01((20 * Math.log10(rms) + 70) / 60) * 100 : 0);
+function renderMeter(dt) {
+  const s = tracker.s;
+  const lv = eng.mode ? pct(s.level) : 0;
+  vis.meter = Math.max(lv, vis.meter - dt * 0.09);
+  E.meterFill.style.width = `${vis.meter.toFixed(1)}%`;
+  E.meterGate.style.left = `${pct(s.gate).toFixed(1)}%`;
+  E.meter.classList.toggle('voiced', !!(eng.mode && s.humming));
+}
+
+function renderToday() {
+  const d = days[dayKey()];
+  E.today.textContent = d && d.ms > 0
+    ? `Today: ${fmtDur(d.ms)} humming · ${d.ok} successful ${d.ok === 1 ? 'hum' : 'hums'}`
+    : 'Today: nothing logged yet';
+}
+function renderHistory() {
+  const keys = Object.keys(days).sort().reverse().slice(0, 60);
+  E.histBody.innerHTML = keys.map((k) => {
+    const d = days[k];
+    return `<tr><td>${fmtDay(k)}</td><td>${fmtDur(d.ms)}</td><td>${d.hums}</td><td>${d.ok}</td></tr>`;
+  }).join('');
+  E.histWrap.hidden = keys.length === 0;
+  E.clearRow.hidden = keys.length === 0;
+  E.histEmpty.hidden = keys.length > 0;
+}
+
+function renderTarget() {
+  E.targetVal.textContent = target;
+  E.toneBtn.textContent = `Hear ${target} Hz`;
+  document.querySelectorAll('.tgt').forEach((el) => { el.textContent = target; });
+  E.legHot.textContent = E.aboutHot.textContent = `±${hzBand(15)} Hz`;
+  E.legWarm.textContent = E.aboutWarm.textContent = `±${hzBand(50)} Hz`;
+  E.kNear.textContent = `Within ±${hzBand(50)} Hz`;
+}
+function setTarget(v) {
+  const next = clampTarget(v);
+  if (next === target) return;
+  target = next;
+  persist();
+  renderTarget();
+  renderLive(performance.now());
+  drawAll();
+}
+
+function updateControls() {
+  const b = E.startBtn;
+  b.disabled = eng.starting;
+  if (eng.starting) { b.textContent = 'Waiting for microphone…'; b.classList.remove('on'); }
+  else if (eng.mode === 'mic' && eng.ctx && eng.ctx.state !== 'running') { b.textContent = 'Resume'; b.classList.remove('on'); }
+  else if (eng.mode === 'mic') { b.textContent = 'Stop'; b.classList.add('on'); }
+  else { b.textContent = 'Start listening'; b.classList.remove('on'); }
+  E.demoBtn.textContent = eng.mode === 'demo' ? 'Stop the preview' : 'Preview with a synthetic hum';
+  E.demoBtn.hidden = eng.mode === 'mic';
+}
+
+/* ---------- Frame loop ---------- */
+let raf = 0, lastFrame = 0, lastDraw = 0, lastLive = 0, lastAn = 0;
+function frame(now) {
+  raf = 0;
+  const dt = lastFrame ? Math.min(100, now - lastFrame) : 16;
+  lastFrame = now;
+  if (eng.mode && eng.an && eng.ctx.state === 'running' && now - lastAn >= 14) { analyze(now); lastAn = now; }
+  stepVis(now, dt);
+  if (now - lastDraw >= 15) { drawAll(now); renderMeter(now - lastDraw); lastDraw = now; }
+  if (now - lastLive >= 100) { renderLive(now); renderStats(); lastLive = now; }
+  const busy = eng.mode || eng.starting || vis.ripples.length || vis.cs > 0 || vis.flash > 0 || vis.meter > 0.5 ||
+    now < toneUntil + 300 || now - stoppedAt < 1500 || (vis.lastSeg && now - vis.lastSegAt < 2800) ||
+    Math.abs(vis.puckA - (vis.hasCents ? 0.3 : 0)) > 0.01;
+  if (busy) raf = requestAnimationFrame(frame);
+  else { lastFrame = 0; drawAll(now); renderLive(now); renderStats(); }
+}
+function ensureLoop() { if (!raf) raf = requestAnimationFrame(frame); }
+
+/* ---------- Events ---------- */
+E.startBtn.addEventListener('click', () => {
+  if (eng.mode === 'mic') {
+    if (eng.ctx && eng.ctx.state !== 'running') { eng.ctx.resume().then(updateControls, () => {}); return; }
+    stopEngine({ suspend: true });
+  } else {
+    startMic();
+  }
+});
+E.toneBtn.addEventListener('click', playTone);
+E.demoBtn.addEventListener('click', () => { if (eng.mode === 'demo') stopEngine({ suspend: true }); else startDemo(); });
+E.resetBtn.addEventListener('click', resetSession);
+
+function stepper(btn, delta) {
+  let wait = 0, rep = 0;
+  const stop = () => { clearTimeout(wait); clearInterval(rep); };
+  btn.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    stop();
+    setTarget(target + delta);
+    wait = setTimeout(() => { rep = setInterval(() => setTarget(target + delta), 70); }, 420);
+  });
+  ['pointerup', 'pointerleave', 'pointercancel', 'blur'].forEach((ev) => btn.addEventListener(ev, stop));
+  btn.addEventListener('click', (e) => { if (e.detail === 0) setTarget(target + delta); }); // keyboard
+  btn.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+stepper(E.tDown, -1);
+stepper(E.tUp, +1);
+
+E.clearBtn.addEventListener('click', () => { E.clearConfirm.hidden = false; E.clearBtn.hidden = true; E.clearNo.focus(); });
+E.clearNo.addEventListener('click', () => { E.clearConfirm.hidden = true; E.clearBtn.hidden = false; });
+E.clearYes.addEventListener('click', () => {
+  for (const k of Object.keys(days)) delete days[k];
+  persist();
+  E.clearConfirm.hidden = true; E.clearBtn.hidden = false;
+  renderToday(); renderHistory();
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    tracker.flush();
+  } else {
+    if (eng.mode) {
+      requestWake();
+      if (eng.ctx && eng.ctx.state !== 'running') eng.ctx.resume().catch(() => {});
+    }
+    renderToday();
+    updateControls();
+    ensureLoop();
+  }
+});
+
+const onTheme = () => { readTheme(); E.hums.querySelectorAll('.hum').forEach(paintChip); drawAll(); };
+if (darkQuery.addEventListener) darkQuery.addEventListener('change', onTheme); else darkQuery.addListener(onTheme);
+
+/* ---------- Boot ---------- */
+readTheme();
+setupCanvas('orb');
+setupCanvas('gauge');
+setupCanvas('trace');
+renderTarget();
+renderToday();
+renderHistory();
+renderStats();
+renderLive(performance.now());
+updateControls();
+drawAll();
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => drawAll());
+if (!window.isSecureContext) { E.banner.textContent = MSG.insecure; E.banner.hidden = false; }
+else if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { E.banner.textContent = MSG.noApi; E.banner.hidden = false; }
+})();
+</script>
+</body>
+</html>
