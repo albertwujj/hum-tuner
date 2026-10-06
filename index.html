@@ -172,6 +172,20 @@ h1 {
 .meter.voiced i { background: var(--warm); }
 .meter b { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--muted); opacity: 0.7; }
 
+.toggle {
+  display: inline-flex; align-items: center; gap: 9px; border: 0; background: none; cursor: pointer; padding: 6px 4px;
+  color: var(--muted); font-size: 14px;
+}
+.toggle:hover { color: var(--ink); }
+.toggle .knob { position: relative; flex: none; width: 32px; height: 19px; border-radius: 999px; background: var(--line); transition: background-color 0.15s ease; }
+.toggle .knob::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%;
+  background: var(--surface); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: transform 0.15s ease;
+}
+.toggle[aria-pressed="true"] { color: var(--ink); }
+.toggle[aria-pressed="true"] .knob { background: var(--warm); }
+.toggle[aria-pressed="true"] .knob::after { transform: translateX(13px); }
+
 .err { margin: 0; max-width: 440px; color: var(--alert); font-size: 14px; text-align: center; text-wrap: pretty; }
 .link {
   border: 0; background: none; cursor: pointer; padding: 6px 4px;
@@ -260,7 +274,7 @@ th:not(:first-child), td:not(:first-child) { text-align: right; }
 
 @media (prefers-reduced-motion: reduce) {
   .hum.new { animation: none; }
-  .btn, .readout, .status, .hz { transition: none; }
+  .btn, .readout, .status, .hz, .toggle .knob, .toggle .knob::after { transition: none; }
 }
 </style>
 </head>
@@ -297,6 +311,7 @@ th:not(:first-child), td:not(:first-child) { text-align: right; }
         <button type="button" class="btn secondary" id="toneBtn">Hear 130 Hz</button>
       </div>
       <div class="meter" id="meter" aria-hidden="true"><span>Mic</span><div class="bar"><i id="meterFill"></i><b id="meterGate"></b></div></div>
+      <button type="button" class="toggle" id="fbBtn" aria-pressed="true"><span class="knob" aria-hidden="true"></span><span id="fbLabel">Tick near the target</span></button>
       <p class="err" id="err" role="alert" hidden></p>
       <button type="button" class="link" id="demoBtn">Preview with a synthetic hum</button>
       <p class="sr" id="announce" aria-live="polite"></p>
@@ -359,8 +374,13 @@ th:not(:first-child), td:not(:first-child) { text-align: right; }
           </ul>
           <h3>How the app scores</h3>
           <p>The app reads the fundamental pitch of your hum about 60 times a second using the YIN method. Closeness is 100 on the target and falls to 50 at 50 cents away (<span id="aboutWarm">±3.8 Hz</span>). A hum counts as successful when you hold it for at least a second and its average closeness is 60 or more. “On target” means within 15 cents (<span id="aboutHot">±1.1 Hz</span>).</p>
+          <p>While you’re within <span class="warmBand">±3.8 Hz</span>, <span id="fbHow">the app ticks, faster and louder the closer you get</span>. Brief misreadings, like a sudden jump to 60 Hz when you breathe at the end of a hum, are left out of the line and the scores.</p>
           <h3>On iPhone</h3>
-          <p>In Safari, tap Share, then Add to Home Screen, to open the tuner like an app. To stop Safari asking for the microphone every visit, tap the <b>aA</b> button, then Website Settings, then set Microphone to Allow.</p>
+          <div id="iosWeb">
+            <p>In Safari, tap Share, then Add to Home Screen, to open the tuner like an app. To stop Safari asking for the microphone every visit, tap the <b>aA</b> button, then Website Settings, then set Microphone to Allow.</p>
+            <p>Safari can’t make an iPhone vibrate. The Hum Tuner iPhone app wraps this page and taps the phone near the target instead of ticking.</p>
+          </div>
+          <p id="iosApp" hidden>The phone taps while you’re within <span class="warmBand">±3.8 Hz</span>: slow taps at the edge, quick firm ones on target. If you don’t feel them, check Settings › Sounds &amp; Haptics › System Haptics.</p>
           <p class="fine">Audio is analyzed on your device and is never recorded or uploaded. The app measures pitch only; it can't measure nitric oxide.</p>
         </div>
       </details>
@@ -383,6 +403,10 @@ const TRACK = {
   NEAR_CENTS: 50,
   LOCK_CENTS: 15,
   MEDIAN_N: 5,
+  ONSET_AGREE_CENTS: 100, // the frames that open a hum must agree this closely
+  JUMP_CENTS: 250,      // a frame this far from the hum's pitch is held back as a likely glitch
+  AGREE_CENTS: 60,      // held-back frames that agree this closely...
+  CONFIRM_MS: 180,      // ...for this long are a real pitch change, not a glitch
 };
 
 function centsBetween(hz, ref) { return 1200 * Math.log2(hz / ref); }
@@ -461,6 +485,9 @@ function createYin(fs, minHz = PITCH.MIN_HZ, maxHz = PITCH.MAX_HZ) {
       }
     }
 
+    // A dip at the very end of the lag range is still falling past MIN_HZ: rumble or breath, not a pitch.
+    if (tau >= tauMax - 1) return { hz: 0, clarity: 0, rms };
+
     let bt = tau;
     if (tau > 1 && tau <= tauMax) {
       const a = d[tau - 1], b = d[tau], c = d[tau + 1];
@@ -475,11 +502,11 @@ function createYin(fs, minHz = PITCH.MIN_HZ, maxHz = PITCH.MAX_HZ) {
   return { detect, N, W, tauMin, tauMax, fs };
 }
 
-// Turns per-frame detections into hums: voicing with hysteresis, median smoothing, scoring.
+// Turns per-frame detections into hums: voicing with hysteresis, outlier rejection, median smoothing, scoring.
 function createTracker(getTarget, on = {}) {
   const s = {
     nf: 0.001, gate: TRACK.ABS_MIN_RMS, level: 0,
-    run: 0, runStart: 0, med: [],
+    cand: [], med: [], pending: [], tent: null, prevOk: false,
     humming: false, hum: null,
     hz: 0, cents: 0, c: 0, lockStart: -1, lockMs: 0,
     session: null,
@@ -488,10 +515,13 @@ function createTracker(getTarget, on = {}) {
   function resetSession() { s.session = { n: 0, hums: 0, ok: 0, humMs: 0, nearMs: 0, bestLockMs: 0 }; }
   resetSession();
 
+  function clearHeld() { s.cand.length = 0; s.med.length = 0; s.pending.length = 0; s.tent = null; s.prevOk = false; }
+
   function startHum(t0) {
     s.humming = true;
     s.hum = { startT: t0, lastT: t0, voicedMs: 0, cSum: 0, nearMs: 0, lockMs: 0, hzs: [] };
     s.lockStart = -1; s.lockMs = 0;
+    s.pending.length = 0; s.tent = null; s.prevOk = true;
     if (on.start) on.start(t0);
   }
 
@@ -517,9 +547,16 @@ function createTracker(getTarget, on = {}) {
     if (on.frame) on.frame(t, hz, cents, c);
   }
 
+  function accept(t, hz) {
+    s.med.push(hz);
+    if (s.med.length > TRACK.MEDIAN_N) s.med.shift();
+    addFrame(t);
+  }
+
   function endHum() {
     const h = s.hum;
-    s.humming = false; s.hum = null; s.lockStart = -1; s.lockMs = 0; s.run = 0; s.med.length = 0;
+    s.humming = false; s.hum = null; s.lockStart = -1; s.lockMs = 0;
+    clearHeld();
     const dur = h.lastT - h.startT;
     if (dur < TRACK.MIN_HUM_MS || h.voicedMs <= 0) { if (on.discard) on.discard(); return null; }
     const ss = s.session;
@@ -535,6 +572,41 @@ function createTracker(getTarget, on = {}) {
     return seg;
   }
 
+  // A voiced frame during a hum.
+  function humFrame(t, hz) {
+    if (Math.abs(centsBetween(hz, median(s.med))) <= TRACK.JUMP_CENTS) {
+      s.pending.length = 0;
+      if (s.prevOk) { accept(t, hz); return; }
+      // First frame back after a glitch or a dropout: it counts once the next frame agrees with it.
+      const tent = s.tent;
+      if (tent && Math.abs(centsBetween(hz, tent.hz)) <= TRACK.AGREE_CENTS) {
+        accept(tent.t, tent.hz);
+        accept(t, hz);
+        s.tent = null; s.prevOk = true;
+      } else {
+        s.tent = { t, hz };
+      }
+      return;
+    }
+    // Far from the hum's pitch: usually a subharmonic or a burst of breath noise. Hold it back
+    // (out of the trace, readout and scores) unless it stays steady long enough to be a real change.
+    s.prevOk = false; s.tent = null;
+    const p = s.pending;
+    if (p.length && Math.abs(centsBetween(hz, median(p.map((f) => f.hz)))) > TRACK.AGREE_CENTS) p.length = 0;
+    p.push({ t, hz });
+    if (t - p[0].t < TRACK.CONFIRM_MS) return;
+    const h = s.hum, held = p.slice();
+    if (h.lastT - h.startT < t - held[0].t) {
+      // What the hum opened with was shorter than this steady run, so that was the glitch (a creaky
+      // start, say): take it back and restart the hum where the steady pitch began.
+      if (on.retract) on.retract(h.startT);
+      startHum(held[0].t);
+    }
+    s.med.length = 0;
+    for (const f of held) accept(f.t, f.hz);
+    s.pending.length = 0; s.prevOk = true;
+  }
+
   // r: detector result or null (no fresh audio); suppressed: ignore this frame (e.g. our own tone).
   function push(t, r, suppressed) {
     s.level = r ? r.rms : 0;
@@ -548,22 +620,87 @@ function createTracker(getTarget, on = {}) {
         if (s.nf < 1e-5) s.nf = 1e-5;
       }
     }
-    if (voiced) {
-      if (s.run === 0) { s.runStart = t; if (!s.humming) s.med.length = 0; }
-      s.run++;
-      s.med.push(r.hz);
-      if (s.med.length > TRACK.MEDIAN_N) s.med.shift();
-      if (!s.humming && s.run >= TRACK.ONSET_FRAMES) startHum(s.runStart);
-      if (s.humming) addFrame(t);
-    } else {
-      s.run = 0;
-      if (s.humming && t - s.hum.lastT > TRACK.END_GAP_MS) endHum();
+    const heard = r && !suppressed; // false when there was no fresh audio to judge
+    // Timed from the last accepted frame, so glitches can't keep a finished hum alive and a gap is never bridged.
+    if (s.humming && t - s.hum.lastT > TRACK.END_GAP_MS) endHum();
+    if (s.humming) {
+      if (voiced) humFrame(t, r.hz);
+      else if (heard) { s.pending.length = 0; s.tent = null; s.prevOk = false; }
+    } else if (voiced) {
+      // Open a hum only once a few consecutive frames agree on a pitch, so a stray spike can't start or color it.
+      const c = s.cand;
+      c.push({ t, hz: r.hz });
+      if (c.length > TRACK.ONSET_FRAMES) c.shift();
+      if (c.length === TRACK.ONSET_FRAMES) {
+        const m = median(c.map((f) => f.hz));
+        if (c.every((f) => Math.abs(centsBetween(f.hz, m)) <= TRACK.ONSET_AGREE_CENTS)) {
+          const first = c[0].t, hzs = c.map((f) => f.hz);
+          startHum(first);
+          s.cand.length = 0; s.med.length = 0;
+          s.med.push(...hzs);
+          addFrame(t);
+        }
+      }
+    } else if (heard) {
+      s.cand.length = 0;
     }
   }
 
-  function flush() { if (s.humming) endHum(); s.run = 0; s.med.length = 0; }
+  function flush() { if (s.humming) endHum(); clearHeld(); }
 
   return { s, push, flush, resetSession };
+}
+
+// RBJ biquad, one sample at a time.
+function createBiquad(type, f0, fs, q = Math.SQRT1_2) {
+  const w = 2 * Math.PI * f0 / fs, cw = Math.cos(w), al = Math.sin(w) / (2 * q), a0 = 1 + al;
+  const lp = type === 'lowpass';
+  const b0 = (lp ? (1 - cw) / 2 : (1 + cw) / 2) / a0, b1 = (lp ? 1 - cw : -(1 + cw)) / a0, b2 = b0;
+  const a1 = -2 * cw / a0, a2 = (1 - al) / a0;
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  return (x) => {
+    const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1; x1 = x; y2 = y1; y1 = y;
+    return y;
+  };
+}
+
+// For audio that arrives as chunks of samples (the iPhone app's microphone): the same band-limiting as the
+// Web Audio chain, then one detection per HOP_MS of audio however the chunks are sized, stamped on the
+// page clock (performance.now) so the tracker sees steady, increasing times.
+function createPcmAnalyzer(fs, onResult, HOP_MS = 16) {
+  const yin = createYin(fs);
+  const hp = createBiquad('highpass', 55, fs), lp1 = createBiquad('lowpass', 1400, fs), lp2 = createBiquad('lowpass', 1400, fs);
+  let size = 1024;
+  while (size < yin.N * 2) size *= 2;
+  const ring = new Float32Array(size), mask = size - 1, win = new Float32Array(yin.N);
+  const hop = Math.max(1, Math.round(fs * HOP_MS / 1000));
+  let written = 0, nextEnd = yin.N, base = null, lastT = -Infinity;
+  const a = { lastAt: 0, push };
+
+  function push(samples, now) {
+    const end = written + samples.length;
+    // Map sample positions to page time. Chunks arrive with jitter, so track the earliest arrival and
+    // drift slowly toward later ones; a big disagreement (a stall or a restart) re-anchors the clock.
+    const ideal = now - end * 1000 / fs;
+    if (base === null || Math.abs(ideal - base) > 500) base = ideal;
+    else if (ideal < base) base = ideal;
+    else base += (ideal - base) * 0.02;
+    for (let i = 0; i < samples.length; i++) {
+      const v = samples[i];
+      ring[written & mask] = lp2(lp1(hp(Number.isFinite(v) ? v : 0)));
+      written++;
+      if (written < nextEnd) continue;
+      nextEnd += hop;
+      if (end - written > fs) continue; // a backlog of over a second: only analyze its newest second
+      for (let j = 0, k = written - yin.N; j < yin.N; j++, k++) win[j] = ring[k & mask];
+      const t = Math.max(base + written * 1000 / fs, lastT + 0.5);
+      lastT = t;
+      onResult(t, yin.detect(win));
+    }
+    a.lastAt = now;
+  }
+  return a;
 }
 /* DETECTOR END */
 
@@ -580,11 +717,19 @@ const E = {
   histWrap: $('histWrap'), histBody: $('histBody'), histEmpty: $('histEmpty'),
   clearRow: $('clearRow'), clearBtn: $('clearBtn'), clearConfirm: $('clearConfirm'), clearYes: $('clearYes'), clearNo: $('clearNo'),
   legHot: $('legHot'), legWarm: $('legWarm'), aboutHot: $('aboutHot'), aboutWarm: $('aboutWarm'),
+  fbBtn: $('fbBtn'), fbLabel: $('fbLabel'), fbHow: $('fbHow'), iosWeb: $('iosWeb'), iosApp: $('iosApp'),
 };
 const FONT_DATA = '"IBM Plex Mono", ui-monospace, Menlo, monospace';
 const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+
+// Inside the Hum Tuner iPhone app, the app owns the microphone (so it can tap the phone while recording,
+// which Safari can't) and streams 16 kHz samples to this page through window.HumNative.
+const bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.humNative;
+const NATIVE = !!bridge;
+function toNative(msg) { try { bridge.postMessage(msg); } catch {} }
+const canBuzz = !NATIVE && /Android/i.test(navigator.userAgent) && typeof navigator.vibrate === 'function';
 
 /* ---------- Saved settings and daily totals (this browser only) ---------- */
 const KEY = 'nasal-hum-tuner.v1';
@@ -601,7 +746,8 @@ if (saved.days && typeof saved.days === 'object') {
     if (/^\d{4}-\d\d-\d\d$/.test(k) && d && Number.isFinite(d.ms)) days[k] = { ms: +d.ms || 0, hums: +d.hums || 0, ok: +d.ok || 0 };
   }
 }
-function persist() { try { localStorage.setItem(KEY, JSON.stringify({ target, days })); } catch {} }
+let feedbackOn = saved.feedback !== false;
+function persist() { try { localStorage.setItem(KEY, JSON.stringify({ target, days, feedback: feedbackOn })); } catch {} }
 
 /* ---------- Formatting ---------- */
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -656,6 +802,7 @@ const eng = {
   ctx: null, mode: null, starting: false, stream: null, nodes: [], sources: [],
   an: null, raw: null, bytes: null, dec: null, D: 1, yin: null,
   suppressUntil: 0, lastCT: -1, demoTimer: 0,
+  pcm: null, paused: false, // PCM path: the iPhone app's microphone, or the preview inside the app
 };
 let sessionMode = null;
 let toneUntil = 0;
@@ -696,12 +843,21 @@ function buildChain(ac, src) {
 }
 
 function teardown() {
-  clearTimeout(eng.demoTimer);
+  clearTimeout(eng.demoTimer); // also clears the in-app preview's interval (timeouts and intervals share ids)
   for (const s of eng.sources) { try { s.stop(); } catch {} }
   for (const n of eng.nodes) { try { n.disconnect(); } catch {} }
   eng.sources = []; eng.nodes = []; eng.an = null;
   if (eng.stream) { eng.stream.getTracks().forEach((t) => t.stop()); eng.stream = null; }
+  if (eng.pcm && eng.mode === 'mic') toNative({ cmd: 'stop' });
+  eng.pcm = null; eng.paused = false;
 }
+
+function audioPaused() {
+  if (eng.pcm) return eng.paused;
+  return !!(eng.ctx && eng.ctx.state !== 'running');
+}
+
+function pcmTracker(t, r) { tracker.push(t, r, t < eng.suppressUntil); }
 
 function stopEngine({ suspend }) {
   tracker.flush();
@@ -745,6 +901,14 @@ function hideErr() { E.err.hidden = true; E.err.textContent = ''; }
 async function startMic() {
   if (eng.starting) return;
   hideErr();
+  if (NATIVE) {
+    // The app asks for microphone permission if needed, then answers with HumNative.started or .failed.
+    eng.starting = true;
+    updateControls();
+    ensureLoop();
+    toNative({ cmd: 'start' });
+    return;
+  }
   if (!window.isSecureContext) { showErr(MSG.insecure); return; }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { showErr(MSG.noApi); return; }
   const ac = audioCtx(); // created inside the tap so iOS lets it run
@@ -784,9 +948,56 @@ function onTrackEnded() {
 }
 
 function onCtxState() {
+  if (eng.pcm) return;
   if (eng.ctx && eng.ctx.state !== 'running') tracker.flush();
   updateControls();
   ensureLoop();
+}
+
+const NATIVE_MSG = {
+  denied: 'Microphone access is off for Hum Tuner. Turn it on in Settings › Apps › Hum Tuner, then press Start again.',
+  nomic: 'No microphone is available right now. Disconnect any headset that has no mic, then press Start again.',
+  busy: 'The microphone is busy, maybe with a call or another app. Press Start again once it’s free.',
+  other: 'The microphone couldn’t start. Close Hum Tuner fully, open it again, and press Start.',
+};
+if (NATIVE) {
+  window.HumNative = {
+    // The app's microphone is running and will stream samples at fs Hz.
+    started(fs) {
+      eng.starting = false;
+      hideErr();
+      if (eng.mode && eng.mode !== 'mic') stopEngine({ suspend: false });
+      tracker.flush();
+      eng.pcm = createPcmAnalyzer(fs, pcmTracker);
+      eng.paused = false;
+      setMode('mic');
+      requestWake();
+      updateControls();
+      ensureLoop();
+    },
+    failed(reason) {
+      eng.starting = false;
+      if (eng.mode === 'mic') stopEngine({ suspend: false });
+      updateControls();
+      showErr(NATIVE_MSG[reason] || NATIVE_MSG.other);
+    },
+    // Base64 of little-endian Float32 samples.
+    audio(b64) {
+      if (eng.mode !== 'mic' || !eng.pcm || eng.paused) return;
+      const bin = atob(b64), n = bin.length & ~3, bytes = new Uint8Array(n);
+      for (let i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
+      eng.pcm.push(new Float32Array(bytes.buffer), performance.now());
+    },
+    // A call, Siri or the app going to the background stopped the microphone; the app restarts it itself
+    // when it can, or the person taps Resume.
+    paused() {
+      if (eng.mode !== 'mic') return;
+      eng.paused = true;
+      tracker.flush();
+      updateControls();
+      ensureLoop();
+    },
+  };
 }
 
 /* Synthetic hum for the preview: runs through the same filters and detector as the microphone, silently. */
@@ -799,7 +1010,59 @@ const DEMO = [
 function harmonicWave(ac, amps) {
   return ac.createPeriodicWave(new Float32Array(amps.length), new Float32Array(amps));
 }
+// In the iPhone app the preview is synthesized here and fed through the same PCM path as the app's microphone,
+// so the page never opens Web Audio there (which could reconfigure the app's audio session).
+function startPcmDemo() {
+  hideErr();
+  if (eng.mode) stopEngine({ suspend: false });
+  const fs = 16000, amps = [1, 0.55, 0.3, 0.2, 0.12, 0.08, 0.05, 0.03], GAP = 1.1, CYCLES = 12;
+  const plan = [];
+  let at = 0.15;
+  for (let c = 0; c < CYCLES; c++) for (const h of DEMO) { plan.push({ t0: at, h }); at += h.d + GAP; }
+  const totalS = at;
+  const pitchAt = (h, x) => {
+    const f = h.f;
+    for (let i = 1; i < f.length; i++) if (x <= f[i][0]) return f[i - 1][1] + (f[i][1] - f[i - 1][1]) * (x - f[i - 1][0]) / (f[i][0] - f[i - 1][0]);
+    return f[f.length - 1][1];
+  };
+  let n = 0, ph = 0, k = 0, noise = 12345;
+  const t0 = performance.now();
+  eng.pcm = createPcmAnalyzer(fs, pcmTracker);
+  eng.demoTimer = setInterval(() => {
+    const now = performance.now();
+    const want = Math.floor((now - t0) / 1000 * fs);
+    if (want - n > fs) n = want - fs; // back from the background: skip ahead, don't render a backlog
+    const len = want - n;
+    if (len <= 0) return;
+    const out = new Float32Array(len);
+    for (let i = 0; i < len; i++, n++) {
+      const t = n / fs;
+      while (k < plan.length && t >= plan[k].t0 + plan[k].h.d) k++;
+      noise = (Math.imul(noise, 1103515245) + 12345) & 0x7fffffff;
+      let v = 0.0015 * (noise / 0x3fffffff - 1);
+      const p = plan[k];
+      if (p && t >= p.t0) {
+        const x = t - p.t0, d = p.h.d;
+        const f = pitchAt(p.h, x) + 0.35 * Math.sin(2 * Math.PI * 5.2 * t);
+        ph += 2 * Math.PI * f / fs;
+        if (ph > 2 * Math.PI * 1e4) ph -= 2 * Math.PI * 1e4;
+        const env = 0.08 * Math.min(1, x / 0.08, (d - x) / 0.12);
+        let s = 0;
+        for (let j = 0; j < amps.length; j++) s += amps[j] * Math.sin((j + 1) * ph);
+        v += env * s * 0.55;
+      }
+      out[i] = v;
+    }
+    eng.pcm.push(out, now);
+    if (n / fs > totalS + 0.5 && eng.mode === 'demo') stopEngine({ suspend: true });
+  }, 25);
+  setMode('demo');
+  updateControls();
+  ensureLoop();
+}
+
 function startDemo() {
+  if (NATIVE) { startPcmDemo(); return; }
   hideErr();
   const ac = audioCtx();
   if (!ac) { showErr(MSG.noAudio); return; }
@@ -849,9 +1112,19 @@ function startDemo() {
 }
 
 function playTone() {
+  const d = 1.6;
+  if (NATIVE) toNative({ cmd: 'tone', hz: target, dur: d });
+  else if (!playWebTone(d)) return;
+  const now = performance.now();
+  toneUntil = now + d * 1000;
+  if (eng.mode === 'mic') { tracker.flush(); eng.suppressUntil = now + (d + 0.45) * 1000; }
+  ensureLoop();
+}
+
+function playWebTone(d) {
   const ac = audioCtx();
-  if (!ac) { showErr(MSG.noAudio); return; }
-  const d = 1.6, t0 = ac.currentTime + 0.03;
+  if (!ac) { showErr(MSG.noAudio); return false; }
+  const t0 = ac.currentTime + 0.03;
   const osc = ac.createOscillator();
   // Rich harmonics so small phone speakers still carry the pitch.
   osc.setPeriodicWave(harmonicWave(ac, [0, 1, 0.7, 0.5, 0.35, 0.22, 0.14, 0.09]));
@@ -867,10 +1140,37 @@ function playTone() {
     try { g.disconnect(); } catch {}
     if (!eng.mode && !eng.starting && eng.ctx.state === 'running') eng.ctx.suspend().catch(() => {});
   };
-  const now = performance.now();
-  toneUntil = now + d * 1000;
-  if (eng.mode === 'mic') { tracker.flush(); eng.suppressUntil = now + (d + 0.45) * 1000; }
-  ensureLoop();
+  return true;
+}
+
+/* ---------- Feedback near the target: taps in the iPhone app, ticks on the web (plus buzzes on Android) ---------- */
+const fb = { last: 0 };
+function feedbackTick(k) {
+  if (NATIVE) { toNative({ cmd: 'tap', i: 0.4 + 0.6 * k, s: 0.3 + 0.5 * k }); return; }
+  if (canBuzz) { try { navigator.vibrate(Math.round(12 + 20 * k)); } catch {} }
+  const ac = eng.ctx;
+  if (!ac || ac.state !== 'running') return;
+  // A short high blip: the analysis band stops at 1.4 kHz, so the microphone hearing it doesn't disturb the reading.
+  const t0 = ac.currentTime + 0.005;
+  const osc = ac.createOscillator(), g = ac.createGain();
+  osc.frequency.value = 3000 + 1500 * k;
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(0.05 + 0.13 * k, t0 + 0.002);
+  g.gain.exponentialRampToValueAtTime(0.0005, t0 + 0.035);
+  osc.connect(g); g.connect(ac.destination);
+  osc.start(t0); osc.stop(t0 + 0.045);
+  osc.onended = () => { try { g.disconnect(); } catch {} };
+}
+// Inside ±50 cents: one tick per 620 ms at the edge, speeding up to one per 160 ms dead on target.
+function stepFeedback(now) {
+  const s = tracker.s;
+  if (!feedbackOn || !eng.mode || !s.humming || s.c < 0.5 || audioPaused() || now < eng.suppressUntil) return;
+  const k = clamp01((s.c - 0.5) / 0.5);
+  if (now - fb.last >= 620 - 460 * k) { fb.last = now; feedbackTick(k); }
+}
+function renderFeedback() {
+  E.fbBtn.setAttribute('aria-pressed', String(feedbackOn));
+  E.fbLabel.textContent = NATIVE ? 'Vibrate near the target' : canBuzz ? 'Tick and buzz near the target' : 'Tick near the target';
 }
 
 /* ---------- Screen wake lock ---------- */
@@ -891,6 +1191,8 @@ const tracker = createTracker(() => target, {
     trace.push({ t, hz });
     if (!E.traceEmpty.hidden) E.traceEmpty.hidden = true;
   },
+  // The hum's opening frames turned out to be a glitch: drop them from the line.
+  retract(from) { while (trace.length && trace[trace.length - 1].t >= from) trace.pop(); },
   end: onHumEnd,
 });
 
@@ -1235,7 +1537,7 @@ function renderLive(now) {
   let text, tone = '';
   if (eng.starting) text = 'Allow microphone access to begin';
   else if (!eng.mode) text = now < toneUntil ? `Listen: ${target} Hz` : vis.lastSeg ? 'Paused. Press Start to keep going' : 'Press Start, then hum with your lips closed';
-  else if (eng.ctx && eng.ctx.state !== 'running') text = 'Audio paused. Tap Resume';
+  else if (audioPaused()) text = eng.mode === 'mic' ? 'Microphone paused. Tap Resume' : 'Audio paused. Tap Resume';
   else if (now < eng.suppressUntil) text = `Listen: ${target} Hz, then match it`;
   else if (active) {
     const a = Math.abs(s.cents), secs = ((s.hum.lastT - s.hum.startT) / 1000).toFixed(1);
@@ -1297,6 +1599,7 @@ function renderTarget() {
   E.legHot.textContent = E.aboutHot.textContent = `±${hzBand(15)} Hz`;
   E.legWarm.textContent = E.aboutWarm.textContent = `±${hzBand(50)} Hz`;
   E.kNear.textContent = `Within ±${hzBand(50)} Hz`;
+  document.querySelectorAll('.warmBand').forEach((el) => { el.textContent = `±${hzBand(50)} Hz`; });
 }
 function setTarget(v) {
   const next = clampTarget(v);
@@ -1312,7 +1615,7 @@ function updateControls() {
   const b = E.startBtn;
   b.disabled = eng.starting;
   if (eng.starting) { b.textContent = 'Waiting for microphone…'; b.classList.remove('on'); }
-  else if (eng.mode === 'mic' && eng.ctx && eng.ctx.state !== 'running') { b.textContent = 'Resume'; b.classList.remove('on'); }
+  else if (eng.mode === 'mic' && audioPaused()) { b.textContent = 'Resume'; b.classList.remove('on'); }
   else if (eng.mode === 'mic') { b.textContent = 'Stop'; b.classList.add('on'); }
   else { b.textContent = 'Start listening'; b.classList.remove('on'); }
   E.demoBtn.textContent = eng.mode === 'demo' ? 'Stop the preview' : 'Preview with a synthetic hum';
@@ -1326,6 +1629,9 @@ function frame(now) {
   const dt = lastFrame ? Math.min(100, now - lastFrame) : 16;
   lastFrame = now;
   if (eng.mode && eng.an && eng.ctx.state === 'running' && now - lastAn >= 14) { analyze(now); lastAn = now; }
+  // The app's microphone went quiet without saying why: close the hum rather than leave it hanging.
+  if (eng.pcm && eng.mode === 'mic' && !eng.paused && tracker.s.humming && now - eng.pcm.lastAt > 400) tracker.flush();
+  stepFeedback(now);
   stepVis(now, dt);
   if (now - lastDraw >= 15) { drawAll(now); renderMeter(now - lastDraw); lastDraw = now; }
   if (now - lastLive >= 100) { renderLive(now); renderStats(); lastLive = now; }
@@ -1340,7 +1646,8 @@ function ensureLoop() { if (!raf) raf = requestAnimationFrame(frame); }
 /* ---------- Events ---------- */
 E.startBtn.addEventListener('click', () => {
   if (eng.mode === 'mic') {
-    if (eng.ctx && eng.ctx.state !== 'running') { eng.ctx.resume().then(updateControls, () => {}); return; }
+    if (eng.pcm && eng.paused) { startMic(); return; }
+    if (!eng.pcm && eng.ctx && eng.ctx.state !== 'running') { eng.ctx.resume().then(updateControls, () => {}); return; }
     stopEngine({ suspend: true });
   } else {
     startMic();
@@ -1349,6 +1656,12 @@ E.startBtn.addEventListener('click', () => {
 E.toneBtn.addEventListener('click', playTone);
 E.demoBtn.addEventListener('click', () => { if (eng.mode === 'demo') stopEngine({ suspend: true }); else startDemo(); });
 E.resetBtn.addEventListener('click', resetSession);
+E.fbBtn.addEventListener('click', () => {
+  feedbackOn = !feedbackOn;
+  persist();
+  renderFeedback();
+  if (feedbackOn) feedbackTick(1); // a sample, so you know what to expect
+});
 
 function stepper(btn, delta) {
   let wait = 0, rep = 0;
@@ -1381,7 +1694,7 @@ document.addEventListener('visibilitychange', () => {
   } else {
     if (eng.mode) {
       requestWake();
-      if (eng.ctx && eng.ctx.state !== 'running') eng.ctx.resume().catch(() => {});
+      if (!eng.pcm && eng.ctx && eng.ctx.state !== 'running') eng.ctx.resume().catch(() => {});
     }
     renderToday();
     updateControls();
@@ -1398,6 +1711,7 @@ setupCanvas('orb');
 setupCanvas('gauge');
 setupCanvas('trace');
 renderTarget();
+renderFeedback();
 renderToday();
 renderHistory();
 renderStats();
@@ -1405,7 +1719,11 @@ renderLive(performance.now());
 updateControls();
 drawAll();
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => drawAll());
-if (!window.isSecureContext) { E.banner.textContent = MSG.insecure; E.banner.hidden = false; }
+if (NATIVE) {
+  E.iosWeb.hidden = true;
+  E.iosApp.hidden = false;
+  E.fbHow.textContent = 'the phone taps, faster and firmer the closer you get';
+} else if (!window.isSecureContext) { E.banner.textContent = MSG.insecure; E.banner.hidden = false; }
 else if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { E.banner.textContent = MSG.noApi; E.banner.hidden = false; }
 })();
 </script>
